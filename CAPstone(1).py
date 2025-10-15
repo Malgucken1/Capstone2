@@ -3,8 +3,6 @@ import pymongo
 import os
 from sentence_transformers import SentenceTransformer
 from langchain_community.chat_models import ChatOpenAI
-from langchain.prompts import ChatPromptTemplate
-from langchain.schema import StrOutputParser
 from langchain.agents import Tool, initialize_agent, AgentType
 
 # =========================================================================
@@ -22,7 +20,7 @@ EMBEDDING_MODEL_NAME = 'all-MiniLM-L6-v2'
 LLM_MODEL_NAME = "gpt-3.5-turbo"
 
 # =========================================================================
-# 1. FUNKTIONEN ZUM ZUGRIFF AUF DIE DATENBANK
+# 1. DATENBANK & EMBEDDING INITIALISIEREN
 # =========================================================================
 @st.cache_resource
 def get_mongo_collection():
@@ -33,6 +31,18 @@ def get_mongo_collection():
 def get_embedding_model():
     return SentenceTransformer(EMBEDDING_MODEL_NAME)
 
+# MongoDB Collection und Embedding-Modell **vor Tool-Definition** laden
+try:
+    mongo_collection = get_mongo_collection()
+    embedding_model = get_embedding_model()
+    st.success("Datenbank- und Modellverbindung erfolgreich hergestellt.")
+except Exception as e:
+    st.error(f"❌ Initialisierungsfehler: {e}")
+    st.stop()
+
+# =========================================================================
+# 2. HELPER FUNKTION: RETRIEVAL AUS ATLAS
+# =========================================================================
 def retrieve_context(query_text, collection, embedding_model, limit=5):
     query_vector = embedding_model.encode(query_text).tolist()
     vector_search_pipeline = [
@@ -63,11 +73,8 @@ def retrieve_context(query_text, collection, embedding_model, limit=5):
     return context, results
 
 # =========================================================================
-# 2. AGENTIC RAG-LOGIK
+# 3. TOOL DEFINIEREN
 # =========================================================================
-llm = ChatOpenAI(model_name=LLM_MODEL_NAME, temperature=0.0)
-
-# Tool definieren: Retrieval aus Atlas
 def retrieval_tool(query: str) -> str:
     context, _ = retrieve_context(query, mongo_collection, embedding_model, limit=5)
     return context
@@ -80,7 +87,9 @@ tools = [
     )
 ]
 
-# Prompt für Agent
+# =========================================================================
+# 4. AGENT INITIALISIEREN (AGENTIC RAG)
+# =========================================================================
 AGENT_PROMPT = """
 Du bist ein Agent, der dem Benutzer hilft, die besten Airbnb-Listings in Berlin zu finden.
 Du kannst selbständig die Atlas-Retrieval-Funktion nutzen, um relevante Informationen abzurufen.
@@ -91,34 +100,27 @@ Gehe iterativ vor:
 4. Gib die Top-3 Listings mit Name, Viertel und Preis an.
 """
 
-# Agent initialisieren (Agentic RAG)
+llm = ChatOpenAI(model_name=LLM_MODEL_NAME, temperature=0.0)
+
 agent = initialize_agent(
     tools,
     llm,
-    agent=AgentType.OPENAI_FUNCTIONS,  # ermöglicht Tool-Aufrufe
+    agent=AgentType.OPENAI_FUNCTIONS,
     verbose=True,
     agent_kwargs={"prefix": AGENT_PROMPT}
 )
 
 # =========================================================================
-# 3. STREAMLIT UI
+# 5. STREAMLIT UI
 # =========================================================================
 st.set_page_config(page_title="Agentic RAG Airbnb Berlin 🏠", layout="wide")
 st.title("Agentic RAG Chatbot - Airbnb Berlin (MongoDB Atlas)")
 
-# Datenbank & Modell initialisieren
-try:
-    mongo_collection = get_mongo_collection()
-    embedding_model = get_embedding_model()
-    st.success("Datenbank- und Modellverbindung erfolgreich hergestellt.")
-except Exception as e:
-    st.error(f"❌ Initialisierungsfehler: {e}")
-    st.stop()
-
+# Chatverlauf initialisieren
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Zeige Chatverlauf
+# Vorhandene Nachrichten anzeigen
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
@@ -130,7 +132,7 @@ if prompt := st.chat_input("Finde die beste Wohnung in Berlin..."):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("Agent denkt nach und ruft mehrfach Kontext ab..."):
+        with st.spinner("Agent denkt nach und ruft Kontext ab..."):
             response = agent.run(prompt)
             st.markdown(response)
 
