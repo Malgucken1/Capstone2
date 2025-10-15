@@ -10,9 +10,9 @@ from langchain.agents import Tool, initialize_agent, AgentType
 # =========================================================================
 os.environ["OPENAI_API_KEY"] = st.secrets["openai_api_key"]
 
-MONGO_URI = st.secrets["mongodb"]["uri"]
-DATABASE_NAME = st.secrets["mongodb"]["database_name"]
-COLLECTION_NAME = st.secrets["mongodb"]["collection_name"]
+MONGO_URI = st.secrets["mongo_uri"]
+DATABASE_NAME = st.secrets["mongo_db"]
+COLLECTION_NAME = st.secrets["mongo_collection"]
 
 ATLAS_INDEX_NAME = "vector_index"
 VECTOR_FIELD_NAME = "listing_embedding"
@@ -137,3 +137,4 @@ if prompt := st.chat_input("Finde die beste Wohnung in Berlin..."):
             st.markdown(response)
 
         st.session_state.messages.append({"role": "assistant", "content": response})
+
