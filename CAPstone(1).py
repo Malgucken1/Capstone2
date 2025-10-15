@@ -2,64 +2,49 @@ import streamlit as st
 import pymongo
 import os
 from sentence_transformers import SentenceTransformer
-# Korrektur 3: Nutze den korrekten Import für Langchain Chat Models
-from langchain_community.chat_models import ChatOpenAI 
+from langchain_community.chat_models import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
 from langchain.schema import StrOutputParser
+from langchain.agents import Tool, initialize_agent, AgentType
 
 # =========================================================================
-# 0. KONFIGURATION (Laden aus st.secrets)
+# 0. KONFIGURATION
 # =========================================================================
+os.environ["OPENAI_API_KEY"] = st.secrets["openai_api_key"]
 
-# Korrektur 2: Lade den OpenAI API Key als Umgebungsvariable für LangChain
-os.environ["OPENAI_API_KEY"] = st.secrets["openai_api_key"] 
-
-# Korrektur 1: Lade Konfigurationen aus dem [mongodb]-Abschnitt der secrets.toml
 MONGO_URI = st.secrets["mongodb"]["uri"]
 DATABASE_NAME = st.secrets["mongodb"]["database_name"]
 COLLECTION_NAME = st.secrets["mongodb"]["collection_name"]
 
-# Diese Variablen bleiben als Konstanten im Code
-ATLAS_INDEX_NAME = "vector_index" 
-VECTOR_FIELD_NAME = "listing_embedding" 
+ATLAS_INDEX_NAME = "vector_index"
+VECTOR_FIELD_NAME = "listing_embedding"
 EMBEDDING_MODEL_NAME = 'all-MiniLM-L6-v2'
-LLM_MODEL_NAME = "gpt-3.5-turbo" 
+LLM_MODEL_NAME = "gpt-3.5-turbo"
 
 # =========================================================================
 # 1. FUNKTIONEN ZUM ZUGRIFF AUF DIE DATENBANK
 # =========================================================================
-
 @st.cache_resource
 def get_mongo_collection():
-    """Initialisiert die MongoDB-Verbindung und gibt die Collection zurück."""
-    # Der MongoDB Client findet den URI jetzt korrekt über die Variable MONGO_URI
     client = pymongo.MongoClient(MONGO_URI)
     return client[DATABASE_NAME][COLLECTION_NAME]
 
 @st.cache_resource
 def get_embedding_model():
-    """Lädt und cached das Embedding-Modell."""
     return SentenceTransformer(EMBEDDING_MODEL_NAME)
 
 def retrieve_context(query_text, collection, embedding_model, limit=5):
-    """
-    Führt die $vectorSearch in MongoDB Atlas durch, um relevanten Kontext abzurufen (R-Teil).
-    """
-    # 1. Anfrage vektorisieren
-    query_vector = embedding_model.encode(query_text).tolist() 
-
-    # 2. Vector Search Pipeline definieren
+    query_vector = embedding_model.encode(query_text).tolist()
     vector_search_pipeline = [
         {
             '$vectorSearch': {
-                'index': ATLAS_INDEX_NAME,      
-                'path': VECTOR_FIELD_NAME,      
-                'queryVector': query_vector,    
-                'numCandidates': 100,            
-                'limit': limit,                      
+                'index': ATLAS_INDEX_NAME,
+                'path': VECTOR_FIELD_NAME,
+                'queryVector': query_vector,
+                'numCandidates': 100,
+                'limit': limit,
             }
         },
-        # 3. Kontext extrahieren
         {
             '$project': {
                 '_id': 0,
@@ -67,104 +52,86 @@ def retrieve_context(query_text, collection, embedding_model, limit=5):
                 'neighbourhood': 1,
                 'room_type': 1,
                 'price': 1,
-                'score': {'$meta': 'vectorSearchScore'} 
+                'score': {'$meta': 'vectorSearchScore'}
             }
         }
     ]
-
-    # 4. Abfrage ausführen und Ergebnisse formatieren
     results = list(collection.aggregate(vector_search_pipeline))
-    
-    # Kontext in einen String formatieren
     context = ""
     for res in results:
         context += f"Listing Name: {res.get('name')}, Neighbourhood: {res.get('neighbourhood')}, Price: {res.get('price')}, Score: {res.get('score'):.4f}\n"
-        
     return context, results
 
 # =========================================================================
-# 2. CHATBOT-LOGIK (RAG-KETTE)
+# 2. AGENTIC RAG-LOGIK
 # =========================================================================
-
-# LLM-Initialisierung
-# Der API-Schlüssel wird automatisch über os.environ gefunden
 llm = ChatOpenAI(model_name=LLM_MODEL_NAME, temperature=0.0)
 
-# Prompt-Vorlage für den RAG-Chatbot (G-Teil)
-RAG_PROMPT_TEMPLATE = """
-Du bist ein hilfreicher Airbnb-Experte in Berlin.
-Deine Aufgabe ist es, dem Benutzer basierend auf dem KONTEXT zu helfen.
-Der Kontext besteht aus den semantisch ähnlichsten Listings in Berlin.
+# Tool definieren: Retrieval aus Atlas
+def retrieval_tool(query: str) -> str:
+    context, _ = retrieve_context(query, mongo_collection, embedding_model, limit=5)
+    return context
 
-Antwort:
-1. Nenne die Top-3-Listings, die der Anfrage des Benutzers am besten entsprechen.
-2. Gib für jedes Listing den Namen, das Viertel (Neighbourhood) und den Preis an.
-3. Wenn du die Information nicht zuverlässig aus dem Kontext ableiten kannst, sag höflich, dass du sie nicht hast.
+tools = [
+    Tool(
+        name="Atlas-Retrieval",
+        func=retrieval_tool,
+        description="Führt eine semantische Suche in der MongoDB Atlas Vector-Datenbank durch, um relevante Airbnb-Listings zu finden."
+    )
+]
 
-KONTEXT:
-{context}
-
-FRAGE: {question}
+# Prompt für Agent
+AGENT_PROMPT = """
+Du bist ein Agent, der dem Benutzer hilft, die besten Airbnb-Listings in Berlin zu finden.
+Du kannst selbständig die Atlas-Retrieval-Funktion nutzen, um relevante Informationen abzurufen.
+Gehe iterativ vor:
+1. Plane, welche Informationen für die Benutzeranfrage nötig sind.
+2. Rufe relevante Listings ab (ggf. mehrfach mit unterschiedlichen Suchanfragen).
+3. Kombiniere die Ergebnisse und generiere eine Antwort.
+4. Gib die Top-3 Listings mit Name, Viertel und Preis an.
 """
 
-rag_prompt = ChatPromptTemplate.from_template(RAG_PROMPT_TEMPLATE)
-
-# Langchain Expression Language (LEL) Kette
-rag_chain = (
-    {"context": lambda x: x["context"], "question": lambda x: x["question"]}
-    | rag_prompt
-    | llm
-    | StrOutputParser()
+# Agent initialisieren (Agentic RAG)
+agent = initialize_agent(
+    tools,
+    llm,
+    agent=AgentType.OPENAI_FUNCTIONS,  # ermöglicht Tool-Aufrufe
+    verbose=True,
+    agent_kwargs={"prefix": AGENT_PROMPT}
 )
 
 # =========================================================================
 # 3. STREAMLIT UI
 # =========================================================================
+st.set_page_config(page_title="Agentic RAG Airbnb Berlin 🏠", layout="wide")
+st.title("Agentic RAG Chatbot - Airbnb Berlin (MongoDB Atlas)")
 
-st.set_page_config(page_title="Atlas RAG Chatbot (Airbnb Berlin) 🏠", layout="wide")
-st.title("Airbnb Berlin RAG Chatbot powered by MongoDB Atlas Vector Search")
-
-# Datenbank und Modell initialisieren
+# Datenbank & Modell initialisieren
 try:
     mongo_collection = get_mongo_collection()
     embedding_model = get_embedding_model()
     st.success("Datenbank- und Modellverbindung erfolgreich hergestellt.")
 except Exception as e:
-    st.error(f"❌ Initialisierungsfehler: Konnte die Datenbank oder das Modell nicht laden. Fehler: {e}")
+    st.error(f"❌ Initialisierungsfehler: {e}")
     st.stop()
 
-
-# Initialisiere den Chat-Verlauf
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Zeige existierende Nachrichten an
+# Zeige Chatverlauf
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# Verarbeite neue Benutzereingabe
+# Neue Benutzereingabe
 if prompt := st.chat_input("Finde die beste Wohnung in Berlin..."):
-    
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("Suche Listings in Atlas und generiere Antwort..."):
-            
-            # R-Teil: Retrieval
-            context, results = retrieve_context(prompt, mongo_collection, embedding_model, limit=5)
-            
-            # G-Teil: Generation
-            response = rag_chain.invoke({"context": context, "question": prompt})
-            
+        with st.spinner("Agent denkt nach und ruft mehrfach Kontext ab..."):
+            response = agent.run(prompt)
             st.markdown(response)
 
-        # Debugging / Transparenz
-        with st.expander("Abgerufener Kontext (Debugging)"):
-             st.markdown("---")
-             st.markdown("Dies sind die 5 semantisch ähnlichsten Listings, die an das LLM gesendet wurden:")
-             st.markdown(context)
-             
         st.session_state.messages.append({"role": "assistant", "content": response})
