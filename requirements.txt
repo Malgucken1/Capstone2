@@ -1,10 +1,20 @@
-# Setze die Langchain-Module zusammen und begrenze die Versionen
-langchain==0.1.20
-langchain-community==0.0.38 
+# Streamlit für die Weboberfläche
+streamlit>=1.26.0
 
-# Die restlichen, nicht konfliktanfälligen Module
-streamlit
-pymongo
-pandas
-sentence-transformers
-openai
+# MongoDB Verbindung
+pymongo>=4.5.0
+
+# Embeddings & semantische Suche
+sentence-transformers>=2.2.2
+torch>=2.1.0
+
+# LangChain Kern & Community Tools
+langchain>=0.1.148
+langchain-community>=0.0.175
+
+# OpenAI API für LLM
+openai>=0.27.6
+
+# Nützliche Bibliotheken
+numpy>=1.24.0
+tqdm>=4.65.0
