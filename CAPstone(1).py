@@ -2,8 +2,12 @@ import streamlit as st
 import pymongo
 import os
 from sentence_transformers import SentenceTransformer
+
+from langchain.agents import initialize_agent
+from langchain.agents.agent import AgentType
+from langchain.tools import Tool
+
 from langchain_community.chat_models import ChatOpenAI
-from langchain.agents import Tool, initialize_agent, AgentType
 import pandas as pd
 import plotly.express as px
 
@@ -160,3 +164,4 @@ if prompt := st.chat_input("Finde die beste Wohnung in Berlin..."):
             st.markdown(response)
         
         st.session_state.messages.append({"role": "assistant", "content": response})
+
