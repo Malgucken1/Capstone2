@@ -8,9 +8,10 @@ pymongo>=4.5.0
 sentence-transformers>=2.2.2
 torch>=2.1.0
 
-# LangChain Kern & Community Tools
-langchain>=0.1.148
-langchain-community>=0.0.175
+langchain==0.3.7
+langchain-core==0.3.13
+langchain-community==0.3.7
+
 
 # OpenAI API für LLM
 openai>=0.27.6
