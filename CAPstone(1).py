@@ -2,12 +2,10 @@ import streamlit as st
 import pymongo
 import os
 from sentence_transformers import SentenceTransformer
-
-from langchain.agents import initialize_agent
-from langchain.agents.agent import AgentType
-from langchain.tools import Tool
-
 from langchain_community.chat_models import ChatOpenAI
+from langchain_community.tools import Tool
+from langchain.agents import create_openai_functions_agent, AgentExecutor
+from langchain_core.prompts import ChatPromptTemplate
 import pandas as pd
 import plotly.express as px
 
@@ -41,7 +39,7 @@ def get_embedding_model():
 try:
     mongo_collection = get_mongo_collection()
     embedding_model = get_embedding_model()
-    st.success("Datenbank- und Modellverbindung erfolgreich hergestellt.")
+    st.success("✅ Datenbank- und Modellverbindung erfolgreich hergestellt.")
 except Exception as e:
     st.error(f"❌ Initialisierungsfehler: {e}")
     st.stop()
@@ -97,24 +95,21 @@ tools = [
 # 4. AGENT INITIALISIEREN (AGENTIC RAG)
 # =========================================================================
 AGENT_PROMPT = """
-Du bist ein Agent, der dem Benutzer hilft, die besten Airbnb-Listings in Berlin zu finden.
+Du bist ein hilfreicher Agent, der dem Benutzer hilft, die besten Airbnb-Listings in Berlin zu finden.
 Du kannst selbständig die Atlas-Retrieval-Funktion nutzen, um relevante Informationen abzurufen.
-Gehe iterativ vor:
-1. Plane, welche Informationen für die Benutzeranfrage nötig sind.
-2. Rufe relevante Listings ab (ggf. mehrfach mit unterschiedlichen Suchanfragen).
-3. Kombiniere die Ergebnisse und generiere eine Antwort.
+Vorgehensweise:
+1. Analysiere die Benutzeranfrage.
+2. Nutze das Tool 'Atlas-Retrieval', um relevante Listings zu finden.
+3. Fasse die Ergebnisse in einer strukturierten, verständlichen Antwort zusammen.
 4. Gib die Top-3 Listings mit Name, Viertel und Preis an.
 """
 
 llm = ChatOpenAI(model_name=LLM_MODEL_NAME, temperature=0.0)
+prompt = ChatPromptTemplate.from_template(AGENT_PROMPT)
 
-agent = initialize_agent(
-    tools,
-    llm,
-    agent=AgentType.OPENAI_FUNCTIONS,
-    verbose=True,
-    agent_kwargs={"prefix": AGENT_PROMPT}
-)
+# Agent und Executor erzeugen (neues API-Design)
+agent = create_openai_functions_agent(llm, tools, prompt)
+agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
 
 # =========================================================================
 # 5. STREAMLIT UI
@@ -132,36 +127,41 @@ for message in st.session_state.messages:
         st.markdown(message["content"])
 
 # Neue Benutzereingabe
-if prompt := st.chat_input("Finde die beste Wohnung in Berlin..."):
-    st.session_state.messages.append({"role": "user", "content": prompt})
+if prompt_text := st.chat_input("Finde die beste Wohnung in Berlin..."):
+    st.session_state.messages.append({"role": "user", "content": prompt_text})
     with st.chat_message("user"):
-        st.markdown(prompt)
+        st.markdown(prompt_text)
 
     with st.chat_message("assistant"):
         with st.spinner("Agent denkt nach und ruft Kontext ab..."):
-            
+
             # Prüfen, ob der User einen Plot will
-            if "plot" in prompt.lower() or "grafik" in prompt.lower():
-                _, results = retrieve_context(prompt, mongo_collection, embedding_model, limit=50)
+            if "plot" in prompt_text.lower() or "grafik" in prompt_text.lower():
+                _, results = retrieve_context(prompt_text, mongo_collection, embedding_model, limit=50)
                 df = pd.DataFrame(results)
-                
-                # Filter für Berlin-Mitte
+
                 df_mitte = df[df['neighbourhood'].str.contains("Mitte", case=False, na=False)]
-                
+
                 if not df_mitte.empty:
-                    fig = px.bar(df_mitte, x='name', y='price',
-                                 title="Airbnb Listings in Berlin-Mitte",
-                                 labels={'price': 'Preis (€)', 'name': 'Listing Name'})
+                    fig = px.bar(
+                        df_mitte,
+                        x='name',
+                        y='price',
+                        title="Airbnb Listings in Berlin-Mitte",
+                        labels={'price': 'Preis (€)', 'name': 'Listing Name'}
+                    )
                     st.plotly_chart(fig)
                     response = "Hier ist ein Plot der Preise für Berlin-Mitte Listings 📊"
                 else:
                     response = "Keine Listings für Berlin-Mitte gefunden, um einen Plot zu erstellen."
-            
             else:
-                # Standard Agentic RAG Antwort
-                response = agent.run(prompt)
-            
-            st.markdown(response)
-        
-        st.session_state.messages.append({"role": "assistant", "content": response})
+                # Standard Agentic RAG Antwort (neues API)
+                try:
+                    result = agent_executor.invoke({"input": prompt_text})
+                    response = result["output"]
+                except Exception as e:
+                    response = f"❌ Fehler beim Agentenlauf: {e}"
 
+            st.markdown(response)
+
+        st.session_state.messages.append({"role": "assistant", "content": response})
