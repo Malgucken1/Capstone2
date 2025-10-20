@@ -4,8 +4,7 @@ import os
 from sentence_transformers import SentenceTransformer
 from langchain_community.chat_models import ChatOpenAI
 from langchain_community.tools import Tool
-
-from langchain.agents.openai_functions import create_openai_functions_agent
+from langchain.agents.openai_functions_agent.base import create_openai_functions_agent
 from langchain.agents import AgentExecutor
 from langchain_core.prompts import ChatPromptTemplate
 import pandas as pd
@@ -167,4 +166,5 @@ if prompt_text := st.chat_input("Finde die beste Wohnung in Berlin..."):
             st.markdown(response)
 
         st.session_state.messages.append({"role": "assistant", "content": response})
+
 
